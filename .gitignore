@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# 转写产物（这些是用户本地跑出来的中间文件，不该进仓库）
+transcribe/
+*_transcribe/
+chunks/
+audio_16k.wav
+clean_segments.json
+turns_punc.json
+diarized/
+win/
+blocks/
+pretrained_models/
+speaker_names.json
