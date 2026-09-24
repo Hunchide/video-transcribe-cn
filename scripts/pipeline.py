@@ -10,6 +10,8 @@
   python pipeline.py <video> --out ./work          # 指定工作目录
 
 设计要点：
+  * **跨平台**：macOS / Linux / Windows 通用。转写后端自动探测
+    （Apple Silicon 走 mlx-whisper，其它机器走 faster-whisper，兜底 openai-whisper）。
   * 每一步都有产物检查，**中断后重跑同一条命令即可续跑**（已转写的分段会跳过）。
   * 长视频转写很慢，用 --budget-sec 控制单次运行时长（默认 480 秒），
     到点自动停在分段边界，提示你再跑一次。这样在有时限的执行环境里不会被强杀。
@@ -28,7 +30,50 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+# Windows 控制台默认 GBK，进度里的 ✓/⏸/✅ 会 UnicodeEncodeError
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+import asr_backend  # noqa: E402
+
 CHUNK_SEC = 1800
+
+PKG_HINT = {
+    "Darwin": "brew install ffmpeg",
+    "Windows": "winget install Gyan.FFmpeg   # 或 choco install ffmpeg / scoop install ffmpeg",
+    "Linux": "apt install ffmpeg   # 或 yum install ffmpeg",
+}
+
+def _ffmpeg_candidates():
+    """运行时构造候选目录：不能在模块顶层固化，否则读不到运行时才有的环境变量。"""
+    lad = os.environ.get("LOCALAPPDATA", "")
+    return [
+        "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+        os.path.expanduser("~/scoop/shims"),
+        os.path.join(lad, "Microsoft", "WinGet", "Links"),
+        os.path.join(lad, "Programs", "ffmpeg", "bin"),
+        r"C:\ffmpeg\bin",
+    ]
+
+
+def resolve_ffmpeg():
+    """返回 True 表示 ffmpeg/ffprobe 可用；顺带修正 os.environ['PATH']。"""
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return True
+    for d in _ffmpeg_candidates():
+        if not d or not os.path.isdir(d):
+            continue
+        ff = os.path.join(d, "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        fp = os.path.join(d, "ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if os.path.exists(ff) and os.path.exists(fp):
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+            print("ℹ  ffmpeg 不在 PATH，已自动定位：%s" % d)
+            return True
+    return False
 
 
 def sh(cmd, check=True, capture=False):
@@ -67,17 +112,23 @@ def main():
     ap.add_argument("--budget-sec", type=int, default=480,
                     help="单次转写时间预算（秒），到点停在分段边界，重跑续跑")
     ap.add_argument("--block-min", type=int, default=15)
-    ap.add_argument("--model", default="mlx-community/whisper-large-v3-turbo")
+    ap.add_argument("--model", default=asr_backend.DEFAULT_MODEL,
+                    help="large-v3-turbo / medium / small / tiny（机器慢就选小）")
+    ap.add_argument("--backend", default="auto",
+                    choices=("auto",) + asr_backend.BACKENDS,
+                    help="转写后端，默认自动探测")
     args = ap.parse_args()
 
     video = os.path.abspath(args.video)
     if not os.path.exists(video):
         sys.exit("找不到视频：%s" % video)
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        sys.exit("需要 ffmpeg / ffprobe：brew install ffmpeg")
-    if not has_module("mlx_whisper"):
-        sys.exit("需要 mlx_whisper（仅 Apple Silicon）：pip install mlx-whisper\n"
-                 "非 Apple Silicon 机器请改用 faster-whisper / whisper.cpp，本脚本不覆盖。")
+    if not resolve_ffmpeg():
+        import platform
+        sys.exit("需要 ffmpeg / ffprobe，且 PATH 里找不到它：%s\n"
+                 "装完记得重开终端让它进 PATH。"
+                 % PKG_HINT.get(platform.system(), "apt install ffmpeg"))
+    prefer = None if args.backend == "auto" else args.backend
+    asr_backend.detect(prefer)      # 探测不到会给安装命令并退出
     if not has_module("opencc"):
         sys.exit("需要 opencc：pip install opencc-python-reimplemented")
 
@@ -117,6 +168,8 @@ def main():
 
     # ---------- 3. 转写（受时间预算约束，可续跑） ----------
     step(3, TOTAL, "转写（预算 %d 秒，跑不完重跑本命令继续）" % args.budget_sec)
+    print("后端：%s" % asr_backend.backend_info(asr_backend.detect(prefer)))
+    print("模型：%s" % asr_backend.normalize_model(args.model))
     t_start = time.time()
     pending = [i for i in range(n_chunks)
                if not os.path.exists(os.path.join(CHUNKS, "chunk_%02d.json" % i))]
@@ -132,6 +185,8 @@ def main():
             cmd += ["--prompt", args.prompt]
         if args.model:
             cmd += ["--model", args.model]
+        if args.backend != "auto":
+            cmd += ["--backend", args.backend]
         sh(cmd)
 
     # ---------- 4. 清洗合并 ----------

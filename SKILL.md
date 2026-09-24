@@ -45,16 +45,41 @@ $PY $S/pipeline.py "/path/to/视频.mp4" --speakers 3 --prompt "…"
 ## 环境
 
 ```bash
-pip install mlx-whisper opencc-python-reimplemented    # 必需
-brew install ffmpeg                                    # 必需
+pip install opencc-python-reimplemented                       # 必需（简繁兜底）
+pip install mlx-whisper        # macOS Apple Silicon 用这个
+pip install faster-whisper     # Windows / Linux / Intel Mac 用这个
+# 兜底（最慢但从不缺轮子）：pip install openai-whisper
+
+brew install ffmpeg            # macOS；Windows: winget install Gyan.FFmpeg
 pip install funasr modelscope                          # 可选：标点恢复
 pip install speechbrain scikit-learn torchaudio        # 可选：说话人分离
 ```
 
-- **Apple Silicon（M1/M2/M3/M4）** → mlx-whisper 走 GPU，实测 **12–15x realtime**（3 小时音频约 15 分钟推理）
-- 非 Apple Silicon：本 skill 的 `transcribe_chunks.py` 用的是 mlx-whisper，需自行替换成 faster-whisper / whisper.cpp，其余步骤通用
-- 模型 `mlx-community/whisper-large-v3-turbo`（约 1.6GB，首次自动下载）
-- speechbrain 模型走 HuggingFace，国内直连不通时要 `export https_proxy=http://127.0.0.1:7890`
+### 跨平台：转写后端自动选择
+
+**整套流水线跨平台，唯一有平台差异的是「语音转文字」这一步**，已由
+`scripts/asr_backend.py` 抽象掉，按优先级自动探测，**代码不用改**：
+
+| 后端 | 平台 | 速度 | 备注 |
+|---|---|---|---|
+| `mlx-whisper` | macOS Apple Silicon（M1–M4） | **12–15x realtime** | 走 GPU，3 小时音频约 15 分钟 |
+| `faster-whisper` | Windows/Linux，N 卡或 CPU | 有 CUDA 约 5–8x，纯 CPU 约 1–2x | CTranslate2，Windows 主力 |
+| `openai-whisper` | 全平台兜底 | 约 0.5–1x | 纯 PyTorch，没别的包时兜底 |
+
+用 `--backend mlx|faster|openai` 可写死；`python scripts/asr_backend.py --info`
+能看当前机器哪些后端可用。
+
+**模型名统一写通用名**，后端各自映射，所以同一个 `--model` 在三处都认：
+`large-v3-turbo`（默认）/ `medium` / `small` / `tiny`（机器慢就选小）。
+旧的 `mlx-community/whisper-large-v3-turbo` 写法也还认，会自动剥成通用名。
+
+- speechbrain 模型走 HuggingFace，国内直连不通时要
+  `export https_proxy=http://127.0.0.1:7890`
+- **Windows 注意**：控制台默认 GBK，`pipeline.py` / `transcribe_chunks.py`
+  已强制 stdout 用 UTF-8；但终端字体不支持时 ✓ 这类符号仍会显示成方块，不影响运行。
+- **ffmpeg 不在 PATH 时** `pipeline.py` 会自动去
+  `/opt/homebrew/bin`、`WinGet Links`、`scoop/shims`、`C:\ffmpeg\bin` 等常见位置找，
+  找到就把该目录塞回 PATH。某些 Agent/沙箱环境会裁掉 homebrew 目录，靠这层兜底。
 
 ## 五个必须知道的坑
 
@@ -250,7 +275,8 @@ python locate_quotes.py $BASE <整理稿路径>
 
 ## 已知限制
 
-- 需要 Apple Silicon 才能用 mlx-whisper；其他平台要换转写后端
+- 最快速度只有 Apple Silicon（mlx-whisper GPU）才有；其它平台会用 faster-whisper
+  （CPU 模式明显慢，长视频建议用 `--model medium` 或 small）
 - 说话人数量靠人工估计（`--speakers`），脚本不自动判定
 - 整理稿质量取决于 LLM 精读，脚本只保证逐字稿准确
 - 网盘/云端的视频要先拿到本地才能处理

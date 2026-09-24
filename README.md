@@ -3,7 +3,8 @@
 把本地长视频（直播录像、播客、课程、会议、访谈）变成**带时间戳的中文逐字稿**和**结构化整理稿**。
 
 - 全程**离线、免费**，不调任何付费 API，不需要 API Key
-- Apple Silicon 上跑 mlx-whisper，实测 **12–15 倍速**（3 小时音频约 15 分钟转完）
+- **跨平台**：macOS / Linux / Windows 通用，转写后端自动挑选
+  （Apple Silicon 约 12–15 倍速；NVIDIA 显卡约 5–8 倍速；纯 CPU 也能跑，只是慢）
 - 可选**说话人分离**：按音色区分「谁说的」，不需要 HuggingFace token
 - 可选**标点恢复**：whisper 默认不给短句加标点，做完从 1.3/百字提到 7–8/百字
 
@@ -20,23 +21,40 @@
 
 ## 环境要求
 
-- **macOS + Apple Silicon（M 系列）**
-- `ffmpeg`（`brew install ffmpeg`）
-- Python 3.10+
+- **macOS / Linux / Windows 都行**，Python 3.10+
+- `ffmpeg`（必须加到 PATH）
 
 ```bash
-# 必需
-pip install mlx-whisper opencc-python-reimplemented
+# ---------- 必备 ----------
+pip install opencc-python-reimplemented
 
-# 可选：标点恢复
-pip install funasr modelscope
+# ---------- 语音转文字：按平台挑一个（脚本也会自动探测）----------
+pip install mlx-whisper        # macOS Apple Silicon（M 系列）—— 最快
+pip install faster-whisper     # Windows / Linux / Intel Mac —— 有 N 卡更快
+pip install openai-whisper     # 什么都不挑的兜底，最慢
 
-# 可选：说话人分离
-pip install speechbrain scikit-learn torchaudio
+# ---------- 可选增强 ----------
+pip install funasr modelscope                     # 标点恢复
+pip install speechbrain scikit-learn torchaudio   # 说话人分离
 ```
 
-> 非 Apple Silicon 机器：`transcribe_chunks.py` 用的是 mlx-whisper，需要你替换成
-> faster-whisper 或 whisper.cpp；流水线里其余步骤（清洗、分块、说话人、标点）都通用。
+不确定装哪个？跑自检，它会告诉你这台机器哪个后端可用：
+
+```bash
+python scripts/asr_backend.py --info
+```
+
+### 各平台速度参考
+
+| 平台 | 后端 | 速度 | 3 小时视频大概要 |
+|---|---|---|---|
+| Mac M1–M4 | mlx-whisper（GPU） | 12–15x | 约 15 分钟 |
+| Windows + NVIDIA 显卡 | faster-whisper（CUDA） | 5–8x | 约 30 分钟 |
+| 无显卡 / 纯 CPU | faster-whisper（int8） | 1–2x | 2–3 小时 |
+| 任意机器兜底 | openai-whisper | ~0.5x | 更久 |
+
+> **CPU 用户请把模型调小**：`--model medium`（甚至 `small`），速度差好几倍，
+> 中文口语场景下准确率损失不大。
 
 ## 快速开始
 
@@ -50,6 +68,9 @@ python scripts/pipeline.py "/path/to/视频.mp4" \
 
 # 加上说话人分离（比如 3 个人）
 python scripts/pipeline.py "/path/to/视频.mp4" --speakers 3
+
+# CPU 机器：换个小的模型
+python scripts/pipeline.py "/path/to/视频.mp4" --model medium
 ```
 
 跑完在工作目录（默认 `<视频名>_transcribe/`）得到：
@@ -82,7 +103,8 @@ video-transcribe-cn/
 ├── README.md
 └── scripts/
     ├── pipeline.py           一键编排：视频 → 逐字稿
-    ├── transcribe_chunks.py  分段调用 mlx-whisper
+    ├── asr_backend.py        转写后端抽象（自动选 mlx / faster / openai）
+    ├── transcribe_chunks.py  分段调用 whisper
     ├── postprocess.py        简繁转换 / 去复读 / 分块
     ├── diarize_v2.py         滑窗提声纹（speechbrain ECAPA）
     ├── diarize_v3.py         聚类 + 质心合并 + Viterbi 平滑
@@ -94,6 +116,20 @@ video-transcribe-cn/
 ```
 
 ## 常见问题
+
+**Q：Windows 能用吗？**
+A：能。唯一的区别是不能用 mlx-whisper（那是苹果的框架），会自动改用 faster-whisper。
+有 NVIDIA 显卡就自动走 CUDA，没显卡走 CPU int8 —— 纯 CPU 建议加 `--model medium`，
+不然 3 小时视频要跑一整天。
+
+**Q：怎么知道我装哪个后端？**
+A：`python scripts/asr_backend.py --info`。它会列出三个后端的可用性和当前会选哪个。
+想写死某个：加 `--backend faster`。
+
+**Q：faster-whisper 报错找不到模型？**
+A：首次运行会自动下载。国内网络不通时设代理
+`export https_proxy=http://127.0.0.1:7890`（Windows PowerShell 里是
+`$env:https_proxy="http://127.0.0.1:7890"`）。
 
 **Q：为什么 whisper 输出繁体？**
 A：加 `initial_prompt` 明确要求简体，后处理还有 opencc `t2s` 兜底。两道防线都有。
@@ -119,7 +155,8 @@ A：主要针对中文调优。英文也能转，把 `transcribe_chunks.py` 的 
 
 ## 已知限制
 
-- 需要 Apple Silicon 才能用 mlx-whisper
+- 最快速度需要 Apple Silicon（mlx-whisper 走 GPU）；其它平台靠 faster-whisper，
+  纯 CPU 转长视频会比较慢，建议把 `--model` 调小
 - 说话人数量靠你估计（`--speakers`），脚本不自动判定
 - 整理稿质量取决于 LLM 精读，脚本只保证逐字稿准确
 
