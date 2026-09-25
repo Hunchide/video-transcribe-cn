@@ -85,6 +85,19 @@ clean_segments.json    清洗后的片段
 长视频转写默认受 `--budget-sec 480` 限制，到点停在分段边界，再跑一次继续
 （这样在有时限的执行环境里不会被强杀）。
 
+### 清理中间产物
+
+3 小时视频跑完，工作目录会涨到 **3GB 以上**，但成稿只有几 MB。确认成稿没问题后清掉：
+
+```bash
+python scripts/cleanup.py <工作目录> --dry-run    # 先看会删什么
+python scripts/cleanup.py <工作目录>               # 确认后清理
+python scripts/pipeline.py <视频> --clean         # 或者跑流程时一步做完
+```
+
+只删音频类中间文件（`audio_16k.wav`、`chunks/`、`win/`、`emb/`），
+`.md` 成稿和 `json` 结果都保留。默认移进系统废纸篓而不是真删，想真删加 `--hard`。
+
 ## 出整理稿
 
 脚本负责「音频 → 文字」，**整理稿靠 LLM 读 `blocks/` 归纳**。
@@ -112,7 +125,8 @@ video-transcribe-cn/
     ├── render_speakers.py    渲染按「轮次」组织的逐字稿
     ├── annotate_summary.py   给整理稿段落标「主讲：X」
     ├── locate_quotes.py      给速览金句反查时间戳
-    └── cross_match.py        跨场次辨认同一批主播
+    ├── cross_match.py        跨场次辨认同一批主播
+    └── cleanup.py            清理中间音频（默认进废纸篓，可恢复）
 ```
 
 ## 常见问题
@@ -152,6 +166,12 @@ A：先跑 `punctuate.py --force`，再跑 `render_speakers.py`，顺序不能�
 **Q：能处理英文视频吗？**
 A：主要针对中文调优。英文也能转，把 `transcribe_chunks.py` 的 `language="zh"` 去掉即可，
 但标点恢复模型是中文专用，英文不建议用。
+
+**Q：跑完占多少磁盘？怎么清理？**
+A：中间音频是大头（3 小时视频约 3GB，成稿只有几 MB）。
+`python scripts/cleanup.py <工作目录> --dry-run` 看明细，去掉 `--dry-run` 执行。
+默认移到系统废纸篓（Windows 退化为 `<工作目录>/_trash_<时间戳>/`），随时能捞回；
+`--hard` 才是真删。清掉后重跑会重新抽音频，成稿不受影响。
 
 ## 已知限制
 

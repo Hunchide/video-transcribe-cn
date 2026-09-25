@@ -117,7 +117,22 @@ def main():
     ap.add_argument("--backend", default="auto",
                     choices=("auto",) + asr_backend.BACKENDS,
                     help="转写后端，默认自动探测")
+    ap.add_argument("--clean", action="store_true",
+                    help="全部跑完后清理中间音频（audio_16k.wav / chunks / win / emb）")
+    ap.add_argument("--clean-only", action="store_true",
+                    help="只清理 <out> 下的中间产物，不跑流程")
+    ap.add_argument("--clean-hard", action="store_true",
+                    help="配合 --clean/--clean-only：真删而不是移进废纸篓")
     args = ap.parse_args()
+
+    if args.clean_only:
+        base = os.path.abspath(args.out or os.path.join(
+            os.path.dirname(os.path.abspath(args.video)),
+            os.path.splitext(os.path.basename(args.video))[0] + "_transcribe"))
+        cmd = [sys.executable, os.path.join(HERE, "cleanup.py"), base, "--yes"]
+        if args.clean_hard:
+            cmd.append("--hard")
+        return subprocess.run(cmd).returncode
 
     video = os.path.abspath(args.video)
     if not os.path.exists(video):
@@ -171,6 +186,7 @@ def main():
     print("后端：%s" % asr_backend.backend_info(asr_backend.detect(prefer)))
     print("模型：%s" % asr_backend.normalize_model(args.model))
     t_start = time.time()
+    finished = True
     pending = [i for i in range(n_chunks)
                if not os.path.exists(os.path.join(CHUNKS, "chunk_%02d.json" % i))]
     if not pending:
@@ -179,7 +195,8 @@ def main():
         if time.time() - t_start > args.budget_sec:
             print("\n⏸ 时间预算用尽，停在分段边界。已完成 %d/%d 段，"
                   "重跑本命令继续。" % (n_chunks - len(pending), n_chunks))
-            return 0
+            finished = False
+            break
         cmd = [sys.executable, os.path.join(HERE, "transcribe_chunks.py"), BASE, str(i)]
         if args.prompt:
             cmd += ["--prompt", args.prompt]
@@ -188,6 +205,9 @@ def main():
         if args.backend != "auto":
             cmd += ["--backend", args.backend]
         sh(cmd)
+
+    if not finished:
+        return 0
 
     # ---------- 4. 清洗合并 ----------
     step(4, TOTAL, "清洗合并（简繁 / 复读 / 分块）")
@@ -199,20 +219,28 @@ def main():
         step(5, TOTAL, "说话人分离 + 标点恢复 + 渲染")
         if not has_module("speechbrain"):
             print("跳过：未安装 speechbrain。pip install speechbrain scikit-learn torchaudio")
-            return 0
-        sh([sys.executable, os.path.join(HERE, "diarize_v2.py"), "--base", BASE, "slip", "all"])
-        sh([sys.executable, os.path.join(HERE, "diarize_v3.py"), BASE,
-            str(max(args.speakers * 4, 8)), "0.55"])
-        if not args.no_punct:
-            if has_module("funasr"):
-                sh([sys.executable, os.path.join(HERE, "punctuate.py"), BASE, "--force"])
-            else:
-                print("跳过标点：pip install funasr modelscope")
-        sh([sys.executable, os.path.join(HERE, "render_speakers.py"), BASE, stem])
-        print("\n说话人还没命名：编辑 %s 把簇号映射成人名，再重跑 render_speakers.py"
-              % os.path.join(BASE, "speaker_names.json"))
+        else:
+            sh([sys.executable, os.path.join(HERE, "diarize_v2.py"), "--base", BASE, "slip", "all"])
+            sh([sys.executable, os.path.join(HERE, "diarize_v3.py"), BASE,
+                str(max(args.speakers * 4, 8)), "0.55"])
+            if not args.no_punct:
+                if has_module("funasr"):
+                    sh([sys.executable, os.path.join(HERE, "punctuate.py"), BASE, "--force"])
+                else:
+                    print("跳过标点：pip install funasr modelscope")
+            sh([sys.executable, os.path.join(HERE, "render_speakers.py"), BASE, stem])
+            print("\n说话人还没命名：编辑 %s 把簇号映射成人名，再重跑 render_speakers.py"
+                  % os.path.join(BASE, "speaker_names.json"))
 
     print("\n✅ 完成：%s" % os.path.join(BASE, "逐字稿_带时间戳.md"))
+
+    # ---------- 6. 清理中间音频（可选） ----------
+    if args.clean:
+        cmd = [sys.executable, os.path.join(HERE, "cleanup.py"), BASE, "--yes"]
+        if args.clean_hard:
+            cmd.append("--hard")
+        subprocess.run(cmd)
+
     print("下一步：把 blocks/ 下的分块交给 LLM 精读，整合成整理稿（见 SKILL.md 步骤 5）")
     return 0
 

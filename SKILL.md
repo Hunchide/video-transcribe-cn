@@ -26,6 +26,9 @@ $PY $S/pipeline.py "/path/to/视频.mp4" --prompt "以下是一段普通话对�
 
 # 一键：逐字稿 + 说话人分离（3 个人）
 $PY $S/pipeline.py "/path/to/视频.mp4" --speakers 3 --prompt "…"
+
+# 一键：跑完顺手清掉中间音频（3 小时视频能省 3GB）
+$PY $S/pipeline.py "/path/to/视频.mp4" --clean --prompt "…"
 ```
 
 `--prompt` **强烈建议填**：把视频主题和专有名词写进去（人名、公司名、行业黑话），
@@ -266,12 +269,49 @@ python locate_quotes.py $BASE <整理稿路径>
    的时间范围天然重叠，脚本取**第一个命中的**，可能把金句归到前一段。
    核对办法：看脚本打印的 `✓ [时间] 说话人 | 段落名`，不一致就**收窄前一段的结束时间**再重跑。
 
+## 收尾：清理中间产物（强烈建议，省 90% 磁盘）
+
+转完一个 3 小时视频，工作目录会涨到 **3GB 以上**，而真正有用的成稿只有几 MB。
+中间产物随时能从源视频重新生成，**成稿确认无误后就该清掉**。
+
+```bash
+PY=<你的 python>; S=<本 skill>/scripts
+
+$PY $S/cleanup.py <BASE> --dry-run     # 先看看要删什么、多大（不动手）
+$PY $S/cleanup.py <BASE>               # 交互式确认后清理
+$PY $S/cleanup.py <BASE> --yes         # 不问直接清
+$PY $S/cleanup.py <BASE> --keep-json   # 保留 chunks/*.json，重跑可跳过转写
+$PY $S/cleanup.py <BASE> --hard --yes  # 真删，不进废纸篓（不可恢复）
+
+# 也可以在 pipeline 里一步做完
+$PY $S/pipeline.py <video> --clean
+$PY $S/pipeline.py <video> --clean-only --out <BASE>   # 只清理，不跑流程
+```
+
+**删什么 / 留什么**
+
+| | 内容 | 理由 |
+|---|---|---|
+| 删 | `audio_16k.wav`、`chunks/`、`win/`、`emb/`、`sample120.wav` | 纯音频，占全部体积的 99%，重跑能再生 |
+| 留 | `*.md`、`blocks/`、`clean_segments.json`、`turns_punc.json`、`diarized/`、`speaker_names.json` | 成稿 + 小体积可复现数据，改说话人名字重渲染时要用 |
+
+**默认不真删**：macOS 丢 `~/.Trash`、Linux 丢 `~/.local/share/Trash/files`、
+Windows 没有系统废纸篓则退化为 `<BASE>/_trash_<时间戳>/`，随时能捞回来。
+只有 `--hard` 才是 `rmtree`。
+
+⚠️ **两个注意**
+
+1. 清掉 `audio_16k.wav` 后重跑 `pipeline.py` **会重新抽音频**（多花几分钟），
+   成稿不受影响。想保留重跑能力就用 `--keep-json`（留 json、只删 wav）。
+2. 说话人分离（diarize）**必须在清理前做完**——它要读 `audio_16k.wav`。
+   `pipeline.py --clean` 只在全部步骤跑完后才清，中途预算用尽会跳过清理。
+
 ## 交付
 
 - `逐字稿_带时间戳.md` —— 全量原文
 - `<主题>_中文整理稿.md` —— 结构化中文笔记 + 顶部「速览金句」+ 底部「行动清单」表
 
-两份都交付给用户。
+两份都交付给用户。**交付完记得跑 `cleanup.py`。**
 
 ## 已知限制
 
