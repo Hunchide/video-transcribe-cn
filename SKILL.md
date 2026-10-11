@@ -299,6 +299,8 @@ $PY $S/cleanup.py <BASE> --dry-run     # 先看看要删什么、多大（不动
 $PY $S/cleanup.py <BASE>               # 交互式确认后清理
 $PY $S/cleanup.py <BASE> --yes         # 不问直接清
 $PY $S/cleanup.py <BASE> --keep-json   # 保留 chunks/*.json，重跑可跳过转写
+$PY $S/cleanup.py <BASE> --keep chunks # 额外保留某类（可多次指定）
+$PY $S/cleanup.py <BASE> --drop win    # 连默认保留的 win/ 也清掉
 $PY $S/cleanup.py <BASE> --hard --yes  # 真删，不进废纸篓（不可恢复）
 
 # 也可以在 pipeline 里一步做完
@@ -310,8 +312,16 @@ $PY $S/pipeline.py <video> --clean-only --out <BASE>   # 只清理，不跑流�
 
 | | 内容 | 理由 |
 |---|---|---|
-| 删 | `audio_16k.wav`、`chunks/`、`win/`、`emb/`、`sample120.wav` | 纯音频，占全部体积的 99%，重跑能再生 |
+| 删 | `audio_16k.wav`、`chunks/`、`emb/`、`sample120.wav` | 纯音频，占全部体积的 99%，重跑能再生 |
+| **默认留** | `win/` | 见下方，只有 3–8M 却决定了下一场认人的成本 |
 | 留 | `*.md`、`blocks/`、`clean_segments.json`、`turns_punc.json`、`diarized/`、`speaker_names.json` | 成稿 + 小体积可复现数据，改说话人名字重渲染时要用 |
+
+**为什么默认留 `win/`**：它是 `cross_match.py` 跨场次认人的唯一来源。一场 2 小时视频的
+`win/` 只有 3–8M，但删掉之后，下一场想拿它当模板做声纹匹配就得重抽音频 + 重跑一遍完整转写
+（`diarize_v2.py slip` 同时要求 `chunks/*.wav` 和 `chunks/*.json`，两者又依赖 `audio_16k.wav`），
+是小时级的重建成本。几十 M 换 GB 级的 audio/chunks，怎么算都划算。真要连它一起清：`--drop win`。
+
+⚠️ **说话人分离必须先做完**——`diarize_v2.py` 要读 `audio_16k.wav`，清理后再想跑分离得重抽音频。
 
 **默认不真删**：macOS 丢 `~/.Trash`、Linux 丢 `~/.local/share/Trash/files`、
 Windows 没有系统废纸篓则退化为 `<BASE>/_trash_<时间戳>/`，随时能捞回来。

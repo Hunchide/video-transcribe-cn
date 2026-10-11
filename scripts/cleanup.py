@@ -12,13 +12,21 @@
   python cleanup.py <BASE> --yes           # 不询问直接清
   python cleanup.py <BASE> --hard          # 真删（rm/rmtree），不进废纸篓
   python cleanup.py <BASE> --keep-json     # 连 chunks/chunk_*.json 也保留
+  python cleanup.py <BASE> --keep chunks   # 额外保留某类中间产物（可多次指定）
+  python cleanup.py <BASE> --drop win      # 连默认保留的项也清掉
 
 删除（音频类大块）：
-  audio_16k.wav   chunks/   win/   emb/   segments_raw/   sample120.wav
+  audio_16k.wav   chunks/   emb/   segments_raw/   sample120.wav
 
-保留（成稿 + 小体积可复现数据）：
+默认保留（成稿 + 小体积高价值数据）：
   *.md            blocks/           clean_segments.json
   turns_punc.json diarized/         speaker_names.json   diar_info.json
+  win/            ← 声纹缓存，见下方 ⚠️
+
+⚠️ 为什么默认留 win/：它是 cross_match.py 认人的唯一来源。
+一场 2 小时视频的 win/ 只有 3–8M，但删掉之后，下一场要回头用它做跨场次
+声纹匹配时，必须重新抽音频 + 重跑一遍完整转写才能救回来（小时级）。
+占几十 M 换掉几 G 中间的"跨场认人"能力，不划算。真要连它一起清就 --drop win。
 """
 import argparse
 import os
@@ -35,6 +43,8 @@ except Exception:
 # 目录型 + 文件型中间产物
 DIR_ITEMS = ["chunks", "win", "emb", "segments_raw"]
 FILE_ITEMS = ["audio_16k.wav", "sample120.wav"]
+# 默认不清理的中间产物（小体积但重建代价极高）
+KEEP_DEFAULT = {"win"}
 
 
 def human(n):
@@ -57,10 +67,18 @@ def dir_size(p):
     return total
 
 
-def plan(base):
-    """返回 [(路径, 类型, 体积)]，按体积升序。"""
+def plan(base, keep=(), drop=()):
+    """返回 [(路径, 类型, 体积)]，按体积升序。
+
+    keep / drop 为中间产物名（chunks / win / emb / audio_16k.wav ...）。
+    drop 优先于 KEEP_DEFAULT，也优先于 keep——显式指定要删就删。
+    """
+    keep, drop = set(keep), set(drop)
+    skip = (KEEP_DEFAULT | keep) - drop
     items = []
     for name in FILE_ITEMS + DIR_ITEMS:
+        if name in skip:
+            continue
         p = os.path.join(base, name)
         if os.path.exists(p):
             items.append((p, "dir" if os.path.isdir(p) else "file", dir_size(p)))
@@ -104,13 +122,17 @@ def main():
                     help="真删而非移进废纸篓（不可恢复）")
     ap.add_argument("--keep-json", action="store_true",
                     help="保留 chunks/ 下的转写 json（默认随 chunks 一起清）")
+    ap.add_argument("--keep", action="append", default=[], metavar="NAME",
+                    help="额外保留某类中间产物（chunks/win/emb/audio_16k.wav…），可多次指定")
+    ap.add_argument("--drop", action="append", default=[], metavar="NAME",
+                    help="强制清掉某类（含默认保留的 win/），可多次指定")
     args = ap.parse_args()
 
     base = os.path.abspath(args.base)
     if not os.path.isdir(base):
         sys.exit("目录不存在：%s" % base)
 
-    items = plan(base)
+    items = plan(base, keep=args.keep, drop=args.drop)
     if not items:
         print("没有中间产物可清理：%s" % base)
         return 0
@@ -123,7 +145,13 @@ def main():
 
     keep = [n for n in ("*.md", "blocks/", "clean_segments.json",
                         "turns_punc.json", "diarized/", "speaker_names.json")]
-    print("\n保留：%s" % ", ".join(keep))
+    dropped_set = set(args.drop)
+    extra = [n for n in (KEEP_DEFAULT | set(args.keep)) - dropped_set
+             if os.path.exists(os.path.join(base, n))]
+    print("\n保留：%s" % ", ".join(keep + extra))
+    if extra:
+        print("      （%s 是声纹/文本缓存，重建代价远大于体积；想连它一起清用 --drop）"
+              % ", ".join(extra))
 
     if args.dry_run:
         print("\n[dry-run] 未做任何改动。")
