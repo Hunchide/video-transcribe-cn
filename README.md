@@ -126,6 +126,7 @@ video-transcribe-cn/
     ├── annotate_summary.py   给整理稿段落标「主讲：X」
     ├── locate_quotes.py      给速览金句反查时间戳
     ├── cross_match.py        跨场次辨认同一批主播
+    ├── f0_probe.py           估算各簇基频 F0 判性别（认人辅助）
     └── cleanup.py            清理中间音频（默认进废纸篓，可恢复）
 ```
 
